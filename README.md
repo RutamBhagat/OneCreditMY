@@ -125,9 +125,16 @@ You need Docker, [uv](https://docs.astral.sh/uv/) (it installs Python 3.14 for y
 ```bash
 just setup      # install the producer's dependencies
 just up         # start Postgres (with pgvector) and RabbitMQ
+just migrate    # apply database migrations
 just publish    # publish the registry feed to the queue
 just down       # stop everything and delete the data
 ```
+
+`just rollback` rolls back one migration. Rolling back the initial migration drops the company table and its data.
+Set `DATABASE_URL` to run migrations against a different database.
+
+Start the API with `just api` and open [Scalar](http://127.0.0.1:8000/scalar).
+Without `just`, run `uv run --locked uvicorn companies.api:app`.
 
 Postgres is at `postgresql://postgres:postgres@localhost:5432/companies`, and the RabbitMQ management UI is at
 http://localhost:15672 (user `guest`, password `guest`). If those ports are taken on your machine, export

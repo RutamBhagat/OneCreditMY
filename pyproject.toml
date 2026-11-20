@@ -5,7 +5,22 @@ description = "Turn a company event feed into a similar-companies service with R
 requires-python = ">=3.14,<3.15"
 dependencies = [
   "aio-pika",
+  "alembic>=1.20.1",
+  "fastapi>=0.165.0",
+  "fastembed>=0.9.1",
+  "pgvector>=0.5.1",
+  "psycopg[binary]>=3.3.9",
+  "pydantic>=2.14.4",
+  "scalar-fastapi>=1.10.1",
+  "sqlalchemy[asyncio]>=2.1.9",
+  "uvicorn>=0.54.0",
 ]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
+]

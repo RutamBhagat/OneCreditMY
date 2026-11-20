@@ -10,6 +10,18 @@ setup:
 up:
     docker compose up -d --wait
 
+# Apply all pending database migrations.
+migrate:
+    uv run --locked alembic upgrade head
+
+# Start the recommendation API and Scalar docs.
+api:
+    uv run --locked uvicorn companies.api:app
+
+# Roll back one database migration. This can delete data.
+rollback:
+    uv run --locked alembic downgrade -1
+
 # Stop everything and delete the volumes.
 down:
     docker compose down -v
