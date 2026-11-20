@@ -119,30 +119,87 @@ Use an open-source embedding model that runs on a laptop CPU. Don't call a paid 
 
 ## Getting started
 
-You need Docker, [uv](https://docs.astral.sh/uv/) (it installs Python 3.14 for you) and
-[just](https://github.com/casey/just). Setup takes about 5 minutes and doesn't count towards your time.
+Run these commands from the repository root. You need Docker with Compose and [uv](https://docs.astral.sh/uv/),
+which installs Python 3.14 if needed. The command blocks use [just](https://github.com/casey/just), with direct
+equivalents below.
 
 ```bash
-just setup      # install the producer's dependencies
-just up         # start Postgres (with pgvector) and RabbitMQ
-just migrate    # apply database migrations
-just publish    # publish the registry feed to the queue
-just down       # stop everything and delete the data
+just setup
+just up
+just migrate
 ```
 
-`just rollback` rolls back one migration. Rolling back the initial migration drops the company table and its data.
-Set `DATABASE_URL` to run migrations against a different database.
+Start the worker and leave it running. On the first start, FastEmbed downloads the multilingual MiniLM model into
+`fastembed_cache` under the system temporary directory. Set `FASTEMBED_CACHE_PATH` to an absolute path if you want a
+persistent cache, and use the same value when running integration tests.
 
-Start the API with `just api` and open [Scalar](http://127.0.0.1:8000/scalar).
-Without `just`, run `uv run --locked uvicorn companies.api:app`.
+```bash
+uv run --locked python -m companies.worker
+```
 
-Postgres is at `postgresql://postgres:postgres@localhost:5432/companies`, and the RabbitMQ management UI is at
-http://localhost:15672 (user `guest`, password `guest`). If those ports are taken on your machine, export
-`POSTGRES_PORT`, `RABBITMQ_PORT` or `RABBITMQ_UI_PORT` in your shell before `just up`; `just publish` uses the same
-`RABBITMQ_PORT`.
+Start the API in a second terminal.
 
-`just publish` sends the whole feed every time you run it. To start again from an empty queue and database, run
-`just down` and then `just up`.
+```bash
+just api
+```
+
+In a third terminal, publish the fixture.
+
+```bash
+just publish
+```
+
+Once `company-events` shows a consumer and zero ready and zero unacknowledged messages in the RabbitMQ management UI,
+request up to four cards for `SYN-001550`. If you get a `404` during the first import, wait for the worker to catch up
+and try again.
+
+```bash
+curl --fail-with-body 'http://127.0.0.1:8000/companies/SYN-001550/similar?limit=4'
+```
+
+Each card includes `registration_number`, `name`, `industry`, and `state`. Interactive API docs are available in
+[Scalar](http://127.0.0.1:8000/scalar).
+
+### Direct commands without `just`
+
+```bash
+uv sync --locked
+docker compose up -d --wait
+uv run --locked alembic upgrade head
+```
+
+Start the worker as above, then run `uv run --locked uvicorn companies.api:app` in a second terminal. In a third
+terminal, publish the feed and use the same curl command once ingestion finishes.
+
+```bash
+uv run python -m producer.publish
+```
+
+### Local ports and cleanup
+
+Postgres uses `postgresql://postgres:postgres@localhost:5432/companies`. RabbitMQ uses port `5672` and its management
+UI is at http://localhost:15672 with `guest` / `guest`. If needed, export `POSTGRES_PORT`, `RABBITMQ_PORT`, and
+`RABBITMQ_UI_PORT` before starting Compose. Use the same `POSTGRES_PORT` and `RABBITMQ_PORT` in the migration, worker,
+API, and publisher terminals. `DATABASE_URL` overrides the database connection and `RABBITMQ_URL` overrides the
+broker connection. If port `8000` is occupied, add `--port 8001` to the direct Uvicorn command and use that port in curl.
+
+Stop the worker and API with Ctrl+C. To delete the local queue and database volumes, run `just down` or
+`docker compose down -v`. To start with fresh data, follow the startup commands again, including migrations.
+`just rollback` rolls back one database migration. Rolling back the initial migration drops the company table.
+
+### Tests
+
+Run `uv run --locked python -m pytest -q` for tests that do not need Compose. The integration tests skip unless their
+connection URLs are set. To run the full suite, use a separate Compose project with automatically assigned host ports.
+
+```bash
+POSTGRES_PORT=0 RABBITMQ_PORT=0 RABBITMQ_UI_PORT=0 \
+  docker compose -p onecredit-tests up -d --wait
+export TEST_DATABASE_URL="postgresql://postgres:postgres@$(docker compose -p onecredit-tests port postgres 5432)/companies"
+export TEST_RABBITMQ_URL="amqp://guest:guest@$(docker compose -p onecredit-tests port rabbitmq 5672)/"
+uv run --locked python -m pytest -q
+docker compose -p onecredit-tests down -v
+```
 
 ## What's already here
 
