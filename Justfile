@@ -14,9 +14,17 @@ up:
 migrate:
     uv run --locked alembic upgrade head
 
+# Start the consumer.
+worker:
+    uv run --locked python -m companies.worker
+
 # Start the recommendation API and Scalar docs.
 api:
     uv run --locked uvicorn companies.api:app
+
+# Run the tests.
+test:
+    uv run --locked python -m pytest -q
 
 # Roll back one database migration. This can delete data.
 rollback:

@@ -17,10 +17,10 @@ just migrate
 1. **Start the consumer** and leave it running.
 
    ```bash
-   uv run --locked python -m companies.worker
+   just worker
    ```
 
-   On first start, FastEmbed downloads the multilingual MiniLM model. Set `FASTEMBED_CACHE_PATH` to an absolute path to use a persistent cache.
+   FastEmbed downloads the multilingual MiniLM model the first time the consumer starts. For a persistent cache, set `FASTEMBED_CACHE_PATH` to an absolute path before you start the consumer.
 
 2. **Start the API** in a second terminal.
 
@@ -50,6 +50,7 @@ just migrate
 | `just setup` | `uv sync --locked` |
 | `just up` | `docker compose up -d --wait` |
 | `just migrate` | `uv run --locked alembic upgrade head` |
+| `just worker` | `uv run --locked python -m companies.worker` |
 | `just api` | `uv run --locked uvicorn companies.api:app` |
 | `just publish` | `uv run python -m producer.publish` |
 
@@ -83,14 +84,14 @@ See [DESIGN.md](DESIGN.md) for assumptions, full-feed verification, limitations,
 
 ## Tests
 
-Run `uv run --locked python -m pytest -q` for tests that require no services. For the full suite, run PostgreSQL and RabbitMQ in a separate Compose project with ephemeral host ports.
+Run `just test` for tests that require no services. For the full suite, use a separate Compose project to start PostgreSQL and RabbitMQ with temporary host ports.
 
 ```bash
 POSTGRES_PORT=0 RABBITMQ_PORT=0 RABBITMQ_UI_PORT=0 \
   docker compose -p onecredit-tests up -d --wait
 export TEST_DATABASE_URL="postgresql://postgres:postgres@$(docker compose -p onecredit-tests port postgres 5432)/companies"
 export TEST_RABBITMQ_URL="amqp://guest:guest@$(docker compose -p onecredit-tests port rabbitmq 5672)/"
-uv run --locked python -m pytest -q
+just test
 docker compose -p onecredit-tests down -v
 ```
 
