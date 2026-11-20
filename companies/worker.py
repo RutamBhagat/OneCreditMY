@@ -3,7 +3,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import aio_pika
 from fastembed import TextEmbedding
@@ -15,6 +15,20 @@ from companies.models import Company
 from producer.publish import QUEUE
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MALAYSIA_TIME = timezone(timedelta(hours=8))
+UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def parse_registry_timestamp(value: str | int) -> datetime:
+    if isinstance(value, int):
+        if not 10**12 <= value < 10**13:
+            raise ValueError("Unix timestamps must be 13-digit milliseconds")
+        return UNIX_EPOCH + timedelta(milliseconds=value)
+
+    timestamp = datetime.fromisoformat(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=MALAYSIA_TIME)
+    return timestamp
 
 
 def company_upsert(values: dict):
@@ -52,7 +66,7 @@ async def consume() -> None:
                     event = json.loads(message.body)
                     values = {
                         "registration_number": event["registrationNumber"].strip().upper(),
-                        "updated_at": datetime.fromisoformat(event["updatedAt"]),
+                        "updated_at": parse_registry_timestamp(event["updatedAt"]),
                         "active": False,
                         "name": None,
                         "industry": None,

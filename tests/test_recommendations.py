@@ -143,8 +143,8 @@ def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
     subprocess.run([sys.executable, "-m", "companies.db", "init"], env=env, check=True, timeout=15)
 
     prefix = f"ORDER-{uuid4().hex.upper()}"
-    source, candidate = (f"{prefix}-{suffix}" for suffix in ("SOURCE", "CANDIDATE"))
-    registrations = [source, candidate]
+    source, candidate, tombstone = (f"{prefix}-{suffix}" for suffix in ("SOURCE", "CANDIDATE", "TOMBSTONE"))
+    registrations = [source, candidate, tombstone]
 
     def upsert(registration, updated_at, name, description, industry, state):
         return {
@@ -174,7 +174,7 @@ def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
         )
 
     source_event = upsert(
-        source,
+        f" {source.lower()} ",
         "2026-08-14T09:00:00+08:00",
         "Portal Source",
         "Operating cafes and coffee shops in the Klang Valley",
@@ -211,23 +211,34 @@ def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
             lambda: re.search(r"http://127\.0\.0\.1:\d+", api_log.read_text()), api, api_log, timeout=15
         )
 
-        def company(registration):
+        def company(registration: str):
             db.rollback()
             return db.execute(
                 select(*Company.__table__.c).where(Company.registration_number == registration)
             ).mappings().one_or_none()
 
-        def has_version(registration, updated_at, active):
+        def has_version(registration: str, updated_at: str, active: bool) -> bool:
             row = company(registration)
             return row is not None and row.updated_at == datetime.fromisoformat(updated_at) and row.active is active
 
-        publish("initial.jsonl", source_event, newer)
+        publish(
+            "initial.jsonl",
+            struck_off(tombstone, "2026-08-14T01:00:00Z"),
+            {**older, "registrationNumber": tombstone, "updatedAt": "2026-08-14T08:30:00+08:00"},
+            source_event,
+            newer,
+        )
         wait_for(
             lambda: has_version(candidate, "2026-08-14T10:00:00+08:00", True),
             worker,
             worker_log,
             timeout=180,
         )
+        assert has_version(tombstone, "2026-08-14T09:00:00+08:00", False)
+        tombstone_row = company(tombstone)
+        assert tombstone_row is not None
+        assert tombstone_row.name is None
+        assert tombstone_row.embedding is None
         persisted = company(candidate)
         assert persisted is not None
         expected = {
@@ -243,25 +254,29 @@ def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
 
         equal_time_conflict = upsert(
             candidate,
-            newer["updatedAt"],
+            "2026-08-14T02:00:00Z",
             "Conflicting Candidate",
             "Freight forwarding and warehouse logistics",
             "Logistics",
             "Penang",
         )
-        replay_marker = upsert(
-            source,
-            "2026-08-14T10:15:00+08:00",
-            "Portal Source",
-            "Operating cafes and coffee shops in the Klang Valley",
-            "Food & Beverage",
-            "Selangor",
-        )
+        replay_marker = {
+            **source_event,
+            "updatedAt": "2026-08-14T10:15:00",
+            "data": {"companyName": "Portal Source", "natureOfBusiness": "Operating cafes and coffee shops"},
+        }
         publish("stale-and-replay.jsonl", older, newer, equal_time_conflict, replay_marker)
         wait_for(
-            lambda: has_version(source, "2026-08-14T10:15:00+08:00", True), worker, worker_log, timeout=30
+            lambda: (row := company(source)) is not None and row.industry is None,
+            worker,
+            worker_log,
+            timeout=30,
         )
         assert worker.poll() is None, worker_log.read_text()
+        assert has_version(source, "2026-08-14T10:15:00+08:00", True)
+        source_row = company(source)
+        assert source_row is not None
+        assert source_row.state is None
         persisted = company(candidate)
         assert persisted is not None
         assert {
@@ -312,7 +327,7 @@ def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
                 "reactivated.jsonl",
                 upsert(
                     source,
-                    "2026-08-14T12:00:00+08:00",
+                    1786680000123,
                     "Portal Source Reactivated",
                     "Operating cafes and coffee shops in the Klang Valley",
                     "Food & Beverage",
@@ -330,5 +345,6 @@ def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
             wait_for(
                 lambda: has_version(candidate, "2026-08-14T12:00:00+08:00", True), worker, worker_log, timeout=30
             )
+            assert has_version(source, "2026-08-14T12:00:00.123+08:00", True)
             assert client.get(candidate_endpoint).status_code == 200
             assert [card["registration_number"] for card in client.get(source_endpoint).json()] == [candidate]
