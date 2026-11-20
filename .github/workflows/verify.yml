@@ -87,3 +87,38 @@ jobs:
       - name: Show service logs on failure
         if: failure()
         run: docker compose logs --no-color
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish the verified ARM64 image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
+          if result=$(docker buildx imagetools inspect "$image" 2>&1); then
+            printf 'SHA tag already exists. Leaving it unchanged.\n%s\n' "$result"
+            exit 0
+          fi
+          case "$result" in
+            *": not found") ;;
+            *) printf '%s\n' "$result" >&2; exit 1 ;;
+          esac
+
+          docker build --platform linux/arm64 --tag "$image" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
+          docker push "$image"
