@@ -1,0 +1,183 @@
+name: Verify recommendation service
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'companies/**'
+      - 'data/**'
+      - 'migrations/**'
+      - 'producer/**'
+      - 'tests/**'
+      - '.python-version'
+      - 'alembic.ini'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker-compose.yml'
+      - 'compose.production.yml'
+      - '.github/workflows/verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'companies/**'
+      - 'data/**'
+      - 'migrations/**'
+      - 'producer/**'
+      - 'tests/**'
+      - '.python-version'
+      - 'alembic.ini'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker-compose.yml'
+      - 'compose.production.yml'
+      - '.github/workflows/verify.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: onecredit-ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.11.29'
+          enable-cache: false
+
+      - run: uv sync --locked
+
+      - name: Start PostgreSQL and RabbitMQ
+        run: docker compose up -d --wait --wait-timeout 120
+
+      - name: Run tests
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/companies
+          TEST_RABBITMQ_URL: amqp://guest:guest@127.0.0.1:5672/
+          FASTEMBED_CACHE_PATH: ${{ runner.temp }}/fastembed
+        run: uv run --locked python -m pytest -q
+
+      - name: Build ARM64 application image
+        run: docker build --platform linux/arm64 --tag onecredit:ci .
+
+      - name: Check API and inference inside the image
+        run: |
+          docker run --rm -i onecredit:ci python - <<'PY'
+          from companies.api import app
+          from companies.worker import MODEL_NAME, TextEmbedding
+
+          vector = next(TextEmbedding(MODEL_NAME).embed(["Mengendalikan kafe dan kedai kopi"]))
+          assert vector.shape == (384,), vector.shape
+          print(f"{app.title}: {MODEL_NAME} produced a {vector.size}-dimensional embedding")
+          PY
+
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish the verified ARM64 image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
+          if result=$(docker buildx imagetools inspect "$image" 2>&1); then
+            printf 'SHA tag already exists. Leaving it unchanged.\n%s\n' "$result"
+            exit 0
+          fi
+          case "$result" in
+            *": not found") ;;
+            *) printf '%s\n' "$result" >&2; exit 1 ;;
+          esac
+
+          docker build --platform linux/arm64 --tag "$image" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" .
+          docker push "$image"
+
+  deploy:
+    needs: [verify, publish]
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PRODUCTION == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    environment: production
+    concurrency: onecredit-production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check production manifest
+        run: test -f compose.production.yml
+
+      - name: Join Tailscale
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+          ping: a1
+
+      - name: Install Uncloud 0.20.0
+        run: |
+          archive=uc_linux_arm64.tar.gz
+          curl -fsSLO "https://github.com/psviderski/uncloud/releases/download/v0.20.0/$archive"
+          printf '%s  %s\n' 31938cf3a85d96968b197ef6c964f7de02f232a9f3cf40434df10a610b245915 "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" uc
+          sudo install -m 755 uc /usr/local/bin/uc
+
+      - name: Configure SSH with the trusted host key
+        env:
+          A1_SSH_KNOWN_HOSTS: ${{ secrets.A1_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$A1_SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%s\n' "$A1_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh-keygen -F a1 >/dev/null
+          cat > ~/.ssh/config <<'EOF'
+          Host a1
+            User ubuntu
+            BatchMode yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Deploy the verified SHA with Uncloud
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
+        run: uc deploy --connect a1 --yes --no-build --file compose.production.yml
