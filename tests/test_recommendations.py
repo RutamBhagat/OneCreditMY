@@ -57,7 +57,13 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
 
     prefix = f"SMOKE-{uuid4().hex.upper()}"
     source, cafe, unrelated = (f"{prefix}-{suffix}" for suffix in ("SOURCE", "NEIGHBOR", "METAL"))
-    registrations = [source, cafe, unrelated]
+    industry_only, null_description, omitted_description = (
+        f"{prefix}-{suffix}" for suffix in ("INDUSTRY", "NULL", "OMITTED")
+    )
+    registrations = [source, cafe, unrelated, industry_only, null_description, omitted_description]
+    source_text = "Operating cafes and coffee shops in the Klang Valley"
+    cafe_text = "Mengendalikan kafe dan kedai kopi di Lembah Klang"
+    unrelated_text = "Precision machining of metal parts for electronics"
 
     def event(registration, name, description, industry=None, state=None):
         return {
@@ -109,17 +115,15 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
             for limit in (0, 51, "invalid"):
                 assert client.get(endpoint, params={"limit": limit}).status_code == 422
 
-            publish(event(source, "Valley Café", "Operating cafes and coffee shops in the Klang Valley"))
+            publish(event(source, "Valley Café", source_text))
             wait_for(lambda: committed(1), worker, worker_log, timeout=180)
             response = client.get(endpoint)
             assert response.status_code == 200
             assert response.json() == []
 
             publish(
-                event(
-                    cafe, "Kedai Kopi", "Mengendalikan kafe dan kedai kopi di Lembah Klang", "Food & Beverage", "Johor"
-                ),
-                event(unrelated, "Metalworks", "Precision machining of metal parts for electronics"),
+                event(cafe, "Kedai Kopi", cafe_text, "Food & Beverage", "Johor"),
+                event(unrelated, "Metalworks", unrelated_text),
             )
             wait_for(lambda: committed(3), worker, worker_log, timeout=30)
             response = client.get(endpoint)
@@ -130,6 +134,40 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
                 {"registration_number": unrelated, "name": "Metalworks", "industry": None, "state": None},
             ]
             assert client.get(endpoint, params={"limit": 1}).json() == cards[:1]
+
+            omitted = event(omitted_description, unrelated_text, None, industry=" \t")
+            del omitted["data"]["natureOfBusiness"]
+            publish(
+                event(industry_only, "Industry Fallback", " \t", industry=cafe_text),
+                event(null_description, source_text, None),
+                omitted,
+            )
+            wait_for(lambda: committed(6), worker, worker_log, timeout=15)
+
+            def company(number):
+                return db.execute(
+                    select(Company.description, Company.embedding).where(Company.registration_number == number)
+                ).one()
+
+            for sparse, reference, description in (
+                (industry_only, cafe, " \t"),
+                (null_description, source, None),
+                (omitted_description, unrelated, None),
+            ):
+                row = company(sparse)
+                assert row.description == description
+                assert len(row.embedding) == 384
+                assert tuple(row.embedding) == tuple(company(reference).embedding)
+                for query, expected in ((sparse, reference), (reference, sparse)):
+                    response = client.get(f"/companies/{query}/similar", params={"limit": 1})
+                    assert response.status_code == 200
+                    assert [card["registration_number"] for card in response.json()] == [expected]
+
+            newer = event(industry_only, "Industry Fallback", unrelated_text, industry=cafe_text)
+            newer["updatedAt"] = "2026-08-14T10:00:00+08:00"
+            publish(newer)
+            wait_for(lambda: company(industry_only).description == unrelated_text, worker, worker_log, timeout=15)
+            assert tuple(company(industry_only).embedding) == tuple(company(unrelated).embedding)
 
 
 def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):

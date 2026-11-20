@@ -74,12 +74,15 @@ async def store_message(session: AsyncSession, message: AbstractIncomingMessage,
     }
     if event["type"] == "company-upserted":
         data = event["data"]
-        description = data["natureOfBusiness"]
-        embedding = await asyncio.to_thread(next, iter(model.embed([description])))
+        name = data["companyName"]
+        industry = data.get("industry")
+        description = data.get("natureOfBusiness")
+        embedding_text = next((text for text in (description, industry) if text and text.strip()), name)
+        embedding = await asyncio.to_thread(next, iter(model.embed([embedding_text])))
         values.update(
             active=True,
-            name=data["companyName"],
-            industry=data.get("industry"),
+            name=name,
+            industry=industry,
             state=data.get("state"),
             description=description,
             embedding=embedding.tolist(),
