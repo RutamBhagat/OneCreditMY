@@ -222,6 +222,10 @@ uc --connect a1 exec -T onecredit-worker python -m producer.publish
 The deployment hook applies database migrations. The publisher sends the fixture to the
 private broker, and the worker can safely process repeated deliveries.
 
+The [verified production deployment](https://github.com/RutamBhagat/OneCreditMY/actions/runs/44717650264/attempts/2)
+published and rolled out ARM64 image `e24ace6001a8d5125acc03a1761a39fc26b52c30`
+and passed the public HTTPS recommendation check.
+
 ## What's already here
 
 ```
