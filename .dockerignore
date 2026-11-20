@@ -1,0 +1,14 @@
+*
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!companies/
+!companies/**
+!migrations/
+!migrations/**
+!producer/
+!producer/**
+!data/
+!data/feed.jsonl
+**/__pycache__/

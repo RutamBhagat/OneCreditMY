@@ -70,6 +70,20 @@ jobs:
           FASTEMBED_CACHE_PATH: ${{ runner.temp }}/fastembed
         run: uv run --locked python -m pytest -q
 
+      - name: Build ARM64 application image
+        run: docker build --platform linux/arm64 --tag onecredit:ci .
+
+      - name: Check API and inference inside the image
+        run: |
+          docker run --rm -i onecredit:ci python - <<'PY'
+          from companies.api import app
+          from companies.worker import MODEL_NAME, TextEmbedding
+
+          vector = next(TextEmbedding(MODEL_NAME).embed(["Mengendalikan kafe dan kedai kopi"]))
+          assert vector.shape == (384,), vector.shape
+          print(f"{app.title}: {MODEL_NAME} produced a {vector.size}-dimensional embedding")
+          PY
+
       - name: Show service logs on failure
         if: failure()
         run: docker compose logs --no-color
