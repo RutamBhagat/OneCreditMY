@@ -1,0 +1,75 @@
+name: Verify recommendation service
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'companies/**'
+      - 'data/**'
+      - 'migrations/**'
+      - 'producer/**'
+      - 'tests/**'
+      - '.python-version'
+      - 'alembic.ini'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker-compose.yml'
+      - '.github/workflows/verify.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'companies/**'
+      - 'data/**'
+      - 'migrations/**'
+      - 'producer/**'
+      - 'tests/**'
+      - '.python-version'
+      - 'alembic.ini'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker-compose.yml'
+      - '.github/workflows/verify.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: onecredit-ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.11.29'
+          enable-cache: false
+
+      - run: uv sync --locked
+
+      - name: Start PostgreSQL and RabbitMQ
+        run: docker compose up -d --wait --wait-timeout 120
+
+      - name: Run tests
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/companies
+          TEST_RABBITMQ_URL: amqp://guest:guest@127.0.0.1:5672/
+          FASTEMBED_CACHE_PATH: ${{ runner.temp }}/fastembed
+        run: uv run --locked python -m pytest -q
+
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
