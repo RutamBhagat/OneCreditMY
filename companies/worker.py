@@ -1,4 +1,4 @@
-"""Consume registry upserts with a business description from company-events."""
+"""Consume company events in delivery order and keep the latest registry version."""
 
 import asyncio
 import json
@@ -7,6 +7,7 @@ from datetime import datetime
 
 import aio_pika
 from fastembed import TextEmbedding
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from companies.db import database_url
@@ -14,6 +15,23 @@ from companies.models import Company
 from producer.publish import QUEUE
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def company_upsert(values: dict):
+    statement = insert(Company).values(**values)
+    return statement.on_conflict_do_update(
+        index_elements=[Company.registration_number],
+        set_={
+            "updated_at": statement.excluded.updated_at,
+            "active": statement.excluded.active,
+            "name": statement.excluded.name,
+            "industry": statement.excluded.industry,
+            "state": statement.excluded.state,
+            "description": statement.excluded.description,
+            "embedding": statement.excluded.embedding,
+        },
+        where=statement.excluded.updated_at > Company.updated_at,
+    )
 
 
 async def consume() -> None:
@@ -32,24 +50,33 @@ async def consume() -> None:
             async with queue.iterator() as messages:
                 async for message in messages:
                     event = json.loads(message.body)
-                    if event["type"] != "company-upserted":
-                        raise ValueError("Expected a company-upserted event")
-                    data = event["data"]
-                    description = data["natureOfBusiness"]
-                    embedding = await asyncio.to_thread(next, iter(model.embed([description])))
+                    values = {
+                        "registration_number": event["registrationNumber"].strip().upper(),
+                        "updated_at": datetime.fromisoformat(event["updatedAt"]),
+                        "active": False,
+                        "name": None,
+                        "industry": None,
+                        "state": None,
+                        "description": None,
+                        "embedding": None,
+                    }
+                    if event["type"] == "company-upserted":
+                        data = event["data"]
+                        description = data["natureOfBusiness"]
+                        embedding = await asyncio.to_thread(next, iter(model.embed([description])))
+                        values.update(
+                            active=True,
+                            name=data["companyName"],
+                            industry=data.get("industry"),
+                            state=data.get("state"),
+                            description=description,
+                            embedding=embedding.tolist(),
+                        )
+                    elif event["type"] != "company-struck-off":
+                        raise ValueError(f"Unsupported event type: {event['type']}")
 
-                    company = Company(
-                        registration_number=event["registrationNumber"].strip().upper(),
-                        updated_at=datetime.fromisoformat(event["updatedAt"]),
-                        active=True,
-                        name=data["companyName"],
-                        industry=data.get("industry"),
-                        state=data.get("state"),
-                        description=description,
-                        embedding=embedding.tolist(),
-                    )
                     async with sessions.begin() as session:
-                        session.add(company)
+                        await session.execute(company_upsert(values))
                     await message.ack()
     finally:
         await engine.dispose()

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from contextlib import ExitStack, contextmanager
+from datetime import datetime
 from uuid import uuid4
 
 import httpx
@@ -129,3 +130,205 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
                 {"registration_number": unrelated, "name": "Metalworks", "industry": None, "state": None},
             ]
             assert client.get(endpoint, params={"limit": 1}).json() == cards[:1]
+
+
+def test_registry_time_controls_updates_and_eligibility(tmp_path, monkeypatch):
+    test_database_url = os.environ.get("TEST_DATABASE_URL")
+    rabbitmq_url = os.environ.get("TEST_RABBITMQ_URL")
+    if not test_database_url or not rabbitmq_url:
+        pytest.skip("Set TEST_DATABASE_URL and TEST_RABBITMQ_URL for an isolated Compose project")
+
+    monkeypatch.setenv("DATABASE_URL", test_database_url)
+    env = {**os.environ, "RABBITMQ_URL": rabbitmq_url}
+    subprocess.run([sys.executable, "-m", "companies.db", "init"], env=env, check=True, timeout=15)
+
+    prefix = f"ORDER-{uuid4().hex.upper()}"
+    source, candidate = (f"{prefix}-{suffix}" for suffix in ("SOURCE", "CANDIDATE"))
+    registrations = [source, candidate]
+
+    def upsert(registration, updated_at, name, description, industry, state):
+        return {
+            "type": "company-upserted",
+            "registrationNumber": registration,
+            "updatedAt": updated_at,
+            "data": {
+                "companyName": name,
+                "natureOfBusiness": description,
+                "industry": industry,
+                "state": state,
+            },
+        }
+
+    def struck_off(registration, updated_at):
+        return {
+            "type": "company-struck-off",
+            "registrationNumber": registration,
+            "updatedAt": updated_at,
+        }
+
+    def publish(filename, *events):
+        path = tmp_path / filename
+        path.write_text("\n".join(map(json.dumps, events)) + "\n", encoding="utf-8")
+        subprocess.run(
+            [sys.executable, "-m", "producer.publish", "--file", str(path)], env=env, check=True, timeout=15
+        )
+
+    source_event = upsert(
+        source,
+        "2026-08-14T09:00:00+08:00",
+        "Portal Source",
+        "Operating cafes and coffee shops in the Klang Valley",
+        "Food & Beverage",
+        "Selangor",
+    )
+    newer = upsert(
+        candidate,
+        "2026-08-14T10:00:00+08:00",
+        "Current Candidate",
+        "Roasting coffee and operating neighbourhood cafes",
+        "Food & Beverage",
+        "Johor",
+    )
+    older = upsert(
+        candidate,
+        "2026-08-14T09:30:00+08:00",
+        "Stale Candidate",
+        "Precision machining of metal components",
+        "Manufacturing",
+        "Perak",
+    )
+
+    worker_log, api_log = tmp_path / "worker-ordering.log", tmp_path / "api-ordering.log"
+    with ExitStack() as stack:
+        engine = create_engine(database_url(), isolation_level="AUTOCOMMIT")
+        stack.callback(engine.dispose)
+        db = stack.enter_context(engine.connect())
+        assert db.scalar(select(Company.registration_number).limit(1)) is None, "Use an empty test database"
+        stack.callback(db.execute, delete(Company).where(Company.registration_number.in_(registrations)))
+        worker = stack.enter_context(service(worker_log, env, "companies.worker"))
+        api = stack.enter_context(service(api_log, env, "uvicorn", "companies.api:app", "--port", "0"))
+        address = wait_for(
+            lambda: re.search(r"http://127\.0\.0\.1:\d+", api_log.read_text()), api, api_log, timeout=15
+        )
+
+        def company(registration):
+            db.rollback()
+            return db.execute(
+                select(*Company.__table__.c).where(Company.registration_number == registration)
+            ).mappings().one_or_none()
+
+        def has_version(registration, updated_at, active):
+            row = company(registration)
+            return row is not None and row.updated_at == datetime.fromisoformat(updated_at) and row.active is active
+
+        publish("initial.jsonl", source_event, newer)
+        wait_for(
+            lambda: has_version(candidate, "2026-08-14T10:00:00+08:00", True),
+            worker,
+            worker_log,
+            timeout=180,
+        )
+        persisted = company(candidate)
+        assert persisted is not None
+        expected = {
+            "registration_number": persisted.registration_number,
+            "updated_at": persisted.updated_at,
+            "active": persisted.active,
+            "name": persisted.name,
+            "industry": persisted.industry,
+            "state": persisted.state,
+            "description": persisted.description,
+            "embedding": tuple(persisted.embedding),
+        }
+
+        equal_time_conflict = upsert(
+            candidate,
+            newer["updatedAt"],
+            "Conflicting Candidate",
+            "Freight forwarding and warehouse logistics",
+            "Logistics",
+            "Penang",
+        )
+        replay_marker = upsert(
+            source,
+            "2026-08-14T10:15:00+08:00",
+            "Portal Source",
+            "Operating cafes and coffee shops in the Klang Valley",
+            "Food & Beverage",
+            "Selangor",
+        )
+        publish("stale-and-replay.jsonl", older, newer, equal_time_conflict, replay_marker)
+        wait_for(
+            lambda: has_version(source, "2026-08-14T10:15:00+08:00", True), worker, worker_log, timeout=30
+        )
+        assert worker.poll() is None, worker_log.read_text()
+        persisted = company(candidate)
+        assert persisted is not None
+        assert {
+            "registration_number": persisted.registration_number,
+            "updated_at": persisted.updated_at,
+            "active": persisted.active,
+            "name": persisted.name,
+            "industry": persisted.industry,
+            "state": persisted.state,
+            "description": persisted.description,
+            "embedding": tuple(persisted.embedding),
+        } == expected
+
+        with httpx.Client(base_url=address.group()) as client:
+            source_endpoint = f"/companies/{source}/similar"
+            candidate_endpoint = f"/companies/{candidate}/similar"
+            assert [card["registration_number"] for card in client.get(source_endpoint).json()] == [candidate]
+
+            publish(
+                "candidate-struck.jsonl",
+                struck_off(candidate, "2026-08-14T11:00:00+08:00"),
+                upsert(
+                    candidate,
+                    "2026-08-14T10:30:00+08:00",
+                    "Stale Reactivation",
+                    "Precision machining of metal components",
+                    "Manufacturing",
+                    "Perak",
+                ),
+            )
+            wait_for(
+                lambda: has_version(candidate, "2026-08-14T11:00:00+08:00", False),
+                worker,
+                worker_log,
+                timeout=30,
+            )
+            assert client.get(source_endpoint).json() == []
+
+            publish("source-struck.jsonl", struck_off(source, "2026-08-14T11:30:00+08:00"))
+            wait_for(
+                lambda: has_version(source, "2026-08-14T11:30:00+08:00", False), worker, worker_log, timeout=30
+            )
+            assert client.get(source_endpoint).status_code == 404
+            assert has_version(candidate, "2026-08-14T11:00:00+08:00", False)
+            assert client.get(candidate_endpoint).status_code == 404
+
+            publish(
+                "reactivated.jsonl",
+                upsert(
+                    source,
+                    "2026-08-14T12:00:00+08:00",
+                    "Portal Source Reactivated",
+                    "Operating cafes and coffee shops in the Klang Valley",
+                    "Food & Beverage",
+                    "Selangor",
+                ),
+                upsert(
+                    candidate,
+                    "2026-08-14T12:00:00+08:00",
+                    "Candidate Reactivated",
+                    "Roasting coffee and operating neighbourhood cafes",
+                    "Food & Beverage",
+                    "Johor",
+                ),
+            )
+            wait_for(
+                lambda: has_version(candidate, "2026-08-14T12:00:00+08:00", True), worker, worker_log, timeout=30
+            )
+            assert client.get(candidate_endpoint).status_code == 200
+            assert [card["registration_number"] for card in client.get(source_endpoint).json()] == [candidate]
