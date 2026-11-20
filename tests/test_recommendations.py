@@ -1,5 +1,6 @@
 """Run against an isolated Compose project with TEST_DATABASE_URL and TEST_RABBITMQ_URL set."""
 
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import pytest
 from sqlalchemy import create_engine, delete, func, select
 
 from companies.db import database_url
-from companies.models import Company
+from companies.models import Company, EventReceipt
 
 
 @contextmanager
@@ -75,19 +76,25 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
 
     def publish(*events):
         path = tmp_path / "events.jsonl"
-        path.write_text("\n".join(map(json.dumps, events)) + "\n", encoding="utf-8")
+        lines = (event if isinstance(event, str) else json.dumps(event) for event in events)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         subprocess.run(
             [sys.executable, "-m", "producer.publish", "--file", str(path)], env=env, check=True, timeout=15
         )
 
     worker_log, api_log = tmp_path / "worker.log", tmp_path / "api.log"
     endpoint = f"/companies/{source}/similar"
+    strike_off = {"type": "company-struck-off", "registrationNumber": source, "updatedAt": "2026-08-14T10:00:00+08:00"}
+    malformed = f"  {json.dumps(strike_off)} trailing text  "
+    malformed_bytes = malformed.encode()
+    malformed_id = hashlib.sha256(malformed_bytes).hexdigest()
     with ExitStack() as stack:
         engine = create_engine(database_url(), isolation_level="AUTOCOMMIT")
         stack.callback(engine.dispose)
         db = stack.enter_context(engine.connect())
         assert db.scalar(select(Company.registration_number).limit(1)) is None, "Use an empty test database"
         stack.callback(db.execute, delete(Company).where(Company.registration_number.in_(registrations)))
+        stack.callback(db.execute, delete(EventReceipt).where(EventReceipt.message_id == malformed_id))
         worker = stack.enter_context(service(worker_log, env, "companies.worker"))
         api = stack.enter_context(service(api_log, env, "uvicorn", "companies.api:app", "--port", "0"))
         address = wait_for(
@@ -121,11 +128,22 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
             assert response.status_code == 200
             assert response.json() == []
 
+            company_snapshot = select(func.row_to_json(Company.__table__.table_valued())).where(
+                Company.registration_number == source
+            )
+            source_before = db.scalar(company_snapshot)
             publish(
+                malformed,
                 event(cafe, "Kedai Kopi", cafe_text, "Food & Beverage", "Johor"),
                 event(unrelated, "Metalworks", unrelated_text),
             )
             wait_for(lambda: committed(3), worker, worker_log, timeout=30)
+            receipt = db.execute(
+                select(EventReceipt.raw_body, EventReceipt.rejection_reason).where(EventReceipt.message_id == malformed_id)
+            ).one()
+            assert receipt.raw_body == malformed_bytes
+            assert receipt.rejection_reason.startswith("Invalid JSON")
+            assert db.scalar(company_snapshot) == source_before
             response = client.get(endpoint)
             assert response.status_code == 200
             cards = response.json()

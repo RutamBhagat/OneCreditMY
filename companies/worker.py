@@ -1,35 +1,21 @@
 """Consume company events in delivery order and keep the latest registry version."""
 
 import asyncio
-import json
 import os
-from datetime import UTC, datetime, timedelta, timezone
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 from fastembed import TextEmbedding
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from companies.db import database_url
+from companies.events import CompanyUpserted, InvalidEvent, parse_event
 from companies.models import Company, EventReceipt
 from producer.publish import QUEUE
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-MALAYSIA_TIME = timezone(timedelta(hours=8))
-UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-def parse_registry_timestamp(value: str | int) -> datetime:
-    if isinstance(value, int):
-        if not 10**12 <= value < 10**13:
-            raise ValueError("Unix timestamps must be 13-digit milliseconds")
-        return UNIX_EPOCH + timedelta(milliseconds=value)
-
-    timestamp = datetime.fromisoformat(value)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=MALAYSIA_TIME)
-    return timestamp
 
 
 def company_upsert(values: dict):
@@ -61,10 +47,19 @@ async def store_message(session: AsyncSession, message: AbstractIncomingMessage,
     if (await session.execute(receipt)).scalar_one_or_none() is None:
         return
 
-    event = json.loads(message.body)
+    try:
+        event = parse_event(message.body)
+    except InvalidEvent as error:
+        await session.execute(
+            update(EventReceipt)
+            .where(EventReceipt.message_id == message.message_id)
+            .values(raw_body=message.body, rejection_reason=str(error))
+        )
+        return
+
     values = {
-        "registration_number": event["registrationNumber"].strip().upper(),
-        "updated_at": parse_registry_timestamp(event["updatedAt"]),
+        "registration_number": event.registration_number,
+        "updated_at": event.updated_at,
         "active": False,
         "name": None,
         "industry": None,
@@ -72,23 +67,19 @@ async def store_message(session: AsyncSession, message: AbstractIncomingMessage,
         "description": None,
         "embedding": None,
     }
-    if event["type"] == "company-upserted":
-        data = event["data"]
-        name = data["companyName"]
-        industry = data.get("industry")
-        description = data.get("natureOfBusiness")
+    if isinstance(event, CompanyUpserted):
+        data = event.data
+        name, industry, description = data.name, data.industry, data.description
         embedding_text = next((text for text in (description, industry) if text and text.strip()), name)
         embedding = await asyncio.to_thread(next, iter(model.embed([embedding_text])))
         values.update(
             active=True,
             name=name,
             industry=industry,
-            state=data.get("state"),
+            state=data.state,
             description=description,
             embedding=embedding.tolist(),
         )
-    elif event["type"] != "company-struck-off":
-        raise ValueError(f"Unsupported event type: {event['type']}")
     await session.execute(company_upsert(values))
 
 
