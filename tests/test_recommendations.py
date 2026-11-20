@@ -1,9 +1,11 @@
 """Run against an isolated Compose project with TEST_DATABASE_URL and TEST_RABBITMQ_URL set."""
 
+import asyncio
 import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -17,6 +19,27 @@ from sqlalchemy import create_engine, delete, func, select
 
 from companies.db import database_url
 from companies.models import Company, EventReceipt
+
+
+def test_database_unavailable_returns_503(monkeypatch):
+    from companies import api
+
+    async def request_recommendations():
+        transport = httpx.ASGITransport(app=api.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get("/companies/SYN-000001/similar")
+
+    with socket.socket() as unavailable:
+        # Reserve a local port without listening, so a real Psycopg connect fails.
+        unavailable.bind(("127.0.0.1", 0))
+        engine = create_engine(f"postgresql+psycopg://127.0.0.1:{unavailable.getsockname()[1]}/companies")
+        try:
+            monkeypatch.setattr(api, "engine", engine)
+            response = asyncio.run(request_recommendations())
+            assert response.status_code == 503
+            assert response.json() == {"detail": "Database unavailable"}
+        finally:
+            engine.dispose()
 
 
 @contextmanager

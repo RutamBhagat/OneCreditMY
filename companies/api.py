@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel
 from scalar_fastapi import AgentScalarConfig, add_scalar_reference
 from sqlalchemy import create_engine, select, true
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.pool import NullPool
 
@@ -49,11 +50,20 @@ class CompanyCard(BaseModel):
     state: str | None
 
 
-@app.get("/companies/{registration_number}/similar")
+@app.get(
+    "/companies/{registration_number}/similar",
+    responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"description": "Database unavailable"}},
+)
 def similar_companies(registration_number: str, limit: Annotated[int, Query(ge=1, le=50)] = 4) -> list[CompanyCard]:
     statement = similar_companies_statement(registration_number.strip().upper(), limit)
-    with Session(engine) as session:
-        rows = session.execute(statement).mappings().all()
+    try:
+        with Session(engine) as session:
+            rows = session.execute(statement).mappings().all()
+    except DBAPIError as error:
+        failed_to_connect = isinstance(error, OperationalError) and error.statement is None
+        if not (failed_to_connect or error.connection_invalidated):
+            raise
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database unavailable") from error
     if not rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return [CompanyCard(**row) for row in rows if row["registration_number"] is not None]
