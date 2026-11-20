@@ -2,11 +2,32 @@
 @source "./company.html";
 
 @theme {
-  --color-surface: #f5f9fc;
-  --color-panel: #e7f1f5;
-  --color-line: #c5d7e0;
-  --color-ink: #172d40;
-  --color-muted: #4a6475;
-  --color-accent: #12645e;
-  --font-display: Georgia, "Times New Roman", serif;
+  --color-surface: #f8f9f6;
+  --color-hover: #eef1eb;
+  --color-line: #ccd2c9;
+  --color-ink: #202720;
+  --color-muted: #465046;
+  --color-accent: #194e39;
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  a:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-surface: #191e1a;
+      --color-hover: #242d25;
+      --color-line: #414b43;
+      --color-ink: #e8ede7;
+      --color-muted: #b4bfb4;
+      --color-accent: #a1d5b8;
+    }
+  }
 }

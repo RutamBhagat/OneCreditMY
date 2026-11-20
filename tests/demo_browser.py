@@ -17,12 +17,13 @@ def check_demo(browser, base_url, *, javascript):
         details = page.locator('section[aria-labelledby="company-name"]')
         name = page.get_by_role("heading", level=1)
         expect(name).to_have_text("Sinar Teguh Bakery Sdn. Bhd.")
-        expect(details).to_contain_text("Food & Beverage · Selangor")
+        expect(details.get_by_text("Food & Beverage", exact=True)).to_be_visible()
+        expect(details.get_by_text("Selangor", exact=True)).to_be_visible()
         expect(details).to_contain_text("Operating cafes and coffee shops in the Klang Valley")
         recommendations = page.get_by_role("region", name="Similar companies")
         cards = recommendations.get_by_role("link")
         expect(cards).to_have_count(4)
-        expect(recommendations.get_by_role("list")).to_have_css("display", "grid")
+        expect(cards.first).to_have_css("display", "grid")
         source_links = [card.get_attribute("href") for card in cards.all()]
         source_json = context.request.get(f"/companies/{SOURCE}/similar").json()
         assert source_links == [f"/demo/{card['registration_number']}" for card in source_json]

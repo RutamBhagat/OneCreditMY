@@ -8,50 +8,72 @@
   <link rel="stylesheet" href="{{ url_for('static', path='demo.css').path }}">
   <script src="{{ url_for('static', path='htmx-2.0.8.min.js').path }}" defer></script>
 </head>
-<body class="min-h-screen bg-surface text-ink antialiased" hx-boost="true">
+<body class="min-h-dvh bg-surface text-ink antialiased" hx-boost="true">
   <header class="border-b border-line">
-    <div class="mx-auto flex max-w-4xl items-center justify-between gap-4 px-5 py-4 sm:px-8">
-      <a class="font-semibold text-accent hover:underline" href="{{ demo_root }}{{ demo_company_number }}">OneCredit demo</a>
-      <a class="text-sm text-muted hover:underline" href="{{ url_for('swagger_ui_html').path }}" hx-boost="false">API docs</a>
-    </div>
+    <nav aria-label="Main" class="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-4 sm:px-8">
+      <a class="font-semibold text-ink hover:underline" href="{{ demo_root }}{{ demo_company_number }}">OneCredit demo</a>
+      <a class="text-sm text-accent underline underline-offset-3" href="{{ url_for('swagger_ui_html').path }}" hx-boost="false">API docs</a>
+    </nav>
   </header>
-  <main class="mx-auto max-w-4xl px-5 py-8 sm:px-8 sm:py-12">
+  <main class="mx-auto max-w-5xl px-5 pt-8 pb-12 sm:px-8 md:pt-12">
     {% if source %}
-    <section aria-labelledby="company-name" class="border-l-4 border-accent bg-panel px-5 py-6 sm:px-8">
-      <p class="font-mono text-sm text-accent wrap-anywhere">{{ source.source_registration_number }}</p>
-      <h1 id="company-name" class="mt-2 font-display text-3xl leading-tight wrap-anywhere sm:text-4xl">{{ source.source_name or source.source_registration_number }}</h1>
-      {% set metadata = [source.source_industry, source.source_state] | select | join(' · ') %}
-      {% if metadata %}<p class="mt-3 text-muted">{{ metadata }}</p>{% endif %}
-      {% if source.source_description and source.source_description.strip() %}
-      <p class="mt-4 max-w-prose text-lg wrap-anywhere">{{ source.source_description }}</p>
+    <section aria-labelledby="company-name">
+      <div class="grid gap-x-10 gap-y-4 border-b border-line pb-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+        <h1 id="company-name" class="text-[clamp(1.875rem,4vw,2.625rem)] leading-[1.12] font-semibold tracking-tight wrap-anywhere">{{ source.source_name or source.source_registration_number }}</h1>
+        <dl class="min-w-0 md:max-w-52">
+          <dt class="text-sm font-medium text-muted">Registration number</dt>
+          <dd class="mt-1 font-mono text-sm wrap-anywhere">{{ source.source_registration_number }}</dd>
+        </dl>
+      </div>
+      {% set description = (source.source_description or '') | trim %}
+      {% set industry = (source.source_industry or '') | trim %}
+      {% set state = (source.source_state or '') | trim %}
+      {% if description or industry or state %}
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-5 py-5 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        {% if description %}
+        <div class="col-span-2 md:col-span-1">
+          <dt class="text-sm font-medium text-muted">Business description</dt>
+          <dd class="mt-1 leading-6 wrap-anywhere">{{ description }}</dd>
+        </div>
+        {% endif %}
+        {% if industry %}
+        <div>
+          <dt class="text-sm font-medium text-muted">Industry</dt>
+          <dd class="mt-1 leading-6 wrap-anywhere">{{ industry }}</dd>
+        </div>
+        {% endif %}
+        {% if state %}
+        <div>
+          <dt class="text-sm font-medium text-muted">State</dt>
+          <dd class="mt-1 leading-6 wrap-anywhere">{{ state }}</dd>
+        </div>
+        {% endif %}
+      </dl>
       {% endif %}
     </section>
-    <section aria-labelledby="similar-companies" class="mt-8">
-      <h2 id="similar-companies" class="font-display text-2xl">Similar companies</h2>
+    <section aria-labelledby="similar-companies" class="mt-8 md:mt-10">
+      <h2 id="similar-companies" class="text-xl font-semibold tracking-tight">Similar companies</h2>
       {% if cards %}
-      <ul class="mt-4 grid gap-3 sm:grid-cols-2">
+      <ul role="list" class="mt-3 divide-y divide-line border-y border-line">
         {% for card in cards %}
         <li>
-          <a class="group flex h-full items-start justify-between gap-3 rounded-lg border border-line bg-white p-4 hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          <a class="grid gap-x-8 gap-y-1 px-2 py-3.5 hover:bg-hover active:bg-hover focus-visible:-outline-offset-2 md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] md:items-baseline"
              href="{{ demo_root }}{{ card.registration_number | urlencode }}">
-            <span class="min-w-0">
-              <span class="block font-semibold wrap-anywhere group-hover:underline">{{ card.name }}</span>
-              {% set metadata = [card.industry, card.state] | select | join(' · ') %}
-              {% if metadata %}<span class="mt-1 block text-sm text-muted wrap-anywhere">{{ metadata }}</span>{% endif %}
-            </span>
-            <span aria-hidden="true" class="text-accent">→</span>
+            <span class="font-medium wrap-anywhere text-accent underline underline-offset-3">{{ card.name }}</span>
+            {% set metadata = [card.industry or '', card.state or ''] | map('trim') | select | join(' · ') %}
+            {% if metadata %}<span class="text-sm wrap-anywhere text-muted">{{ metadata }}</span>{% endif %}
           </a>
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <p class="mt-3 text-muted">No similar companies yet.</p>
+      <p class="mt-3 border-t border-line py-4 text-muted">No similar companies yet.</p>
       {% endif %}
     </section>
     {% else %}
-    <h1 class="font-display text-3xl">Company not found</h1>
+    <h1 class="text-3xl font-semibold tracking-tight">Company not found</h1>
     <p class="mt-3 text-muted">This company is unavailable in the registry.</p>
-    <a class="mt-4 inline-block text-accent underline" href="{{ demo_root }}{{ demo_company_number }}">Open the demo company</a>
+    <a class="mt-4 inline-block text-accent underline underline-offset-3" href="{{ demo_root }}{{ demo_company_number }}">Open the demo company</a>
     {% endif %}
   </main>
 </body>
