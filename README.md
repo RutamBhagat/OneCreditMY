@@ -201,6 +201,27 @@ uv run --locked python -m pytest -q
 docker compose -p onecredit-tests down -v
 ```
 
+## Hosted API demo
+
+Request four recommendations for the synthetic café company `SYN-001550`.
+
+```bash
+curl --fail 'https://onecredit.rutam.dpdns.org/companies/SYN-001550/similar?limit=4'
+```
+
+The demo runs on one ARM64 VM. To deploy it from an authenticated Uncloud client, export
+`IMAGE_TAG` as a verified Git SHA and supply the deployment's existing `POSTGRES_PASSWORD`
+and `RABBITMQ_PASSWORD` through the environment. For a fresh deployment, use randomly
+generated hexadecimal passwords so they can be embedded in connection URLs.
+
+```bash
+uc --connect a1 deploy --yes --no-build --file compose.production.yml
+uc --connect a1 exec -T onecredit-worker python -m producer.publish
+```
+
+The deployment hook applies database migrations. The publisher sends the fixture to the
+private broker, and the worker can safely process repeated deliveries.
+
 ## What's already here
 
 ```

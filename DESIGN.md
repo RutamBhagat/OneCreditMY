@@ -24,6 +24,10 @@ On a fresh Compose stack, the 2,518 deliveries produced 2,450 receipts, includin
 
 `SYN-001550` returned four café or coffee-shop matches. On an Apple M5 with 16 GiB RAM, 50 sequential local HTTP requests (after five warmups) measured 5.02 ms p95.
 
+## Hosted demo
+
+Uncloud runs the API, worker, pgvector and RabbitMQ on one ARM64 VM. Caddy serves the API over HTTPS. PostgreSQL and RabbitMQ use separate persistent volumes and have no published ports. A VM outage takes the demo offline, and losing its disk would require restoring the data or replaying the synthetic fixture. [Deployment instructions](README.md#hosted-api-demo)
+
 ## At 10× volume
 
 At roughly 20,000 companies, monitor queue age and API latency separately. If inference limits ingestion, batch embeddings. For each delivery, commit the transaction before sending the acknowledgement. If connection setup dominates HTTP latency, use a bounded API connection pool. Tune HNSW only if query latency warrants it.

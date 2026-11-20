@@ -1,0 +1,73 @@
+services:
+  onecredit-postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    environment:
+      POSTGRES_USER: onecredit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: companies
+    volumes:
+      - onecredit-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, onecredit, -d, companies]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    deploy:
+      update_config:
+        order: stop-first
+
+  onecredit-rabbitmq:
+    image: rabbitmq:3.13.7-management
+    environment:
+      RABBITMQ_DEFAULT_USER: onecredit
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}
+      RABBITMQ_NODENAME: rabbit@localhost
+    volumes:
+      - onecredit-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, check_port_connectivity]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    deploy:
+      update_config:
+        order: stop-first
+
+  onecredit-api:
+    image: ghcr.io/rutambhagat/onecreditmy:${IMAGE_TAG:?Set IMAGE_TAG to a verified Git SHA}
+    environment:
+      DATABASE_URL: postgresql://onecredit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@onecredit-postgres:5432/companies
+    depends_on:
+      onecredit-postgres:
+        condition: service_healthy
+    x-pre_deploy:
+      command: [python, -m, companies.db, init]
+    x-ports: ["onecredit.rutam.dpdns.org:8000/https"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=2).close()"]
+      interval: 3s
+      timeout: 4s
+      retries: 15
+
+  onecredit-worker:
+    image: ghcr.io/rutambhagat/onecreditmy:${IMAGE_TAG:?Set IMAGE_TAG to a verified Git SHA}
+    command: [python, -m, companies.worker]
+    environment:
+      DATABASE_URL: postgresql://onecredit:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@onecredit-postgres:5432/companies
+      RABBITMQ_URL: amqp://onecredit:${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD}@onecredit-rabbitmq:5672/
+      FASTEMBED_CACHE_PATH: /home/app/fastembed
+    depends_on:
+      onecredit-rabbitmq:
+        condition: service_healthy
+      onecredit-api:
+        condition: service_healthy
+    volumes:
+      - onecredit-worker-cache:/home/app
+    deploy:
+      update_config:
+        order: stop-first
+
+volumes:
+  onecredit-postgres-data:
+  onecredit-rabbitmq-data:
+  onecredit-worker-cache:

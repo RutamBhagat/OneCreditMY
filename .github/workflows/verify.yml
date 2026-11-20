@@ -194,3 +194,16 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
         run: uc deploy --connect a1 --yes --no-build --file compose.production.yml
+
+      - name: Check recommendations over public HTTPS
+        run: |
+          curl --fail --silent --show-error --max-time 10 --retry 6 --retry-all-errors --retry-delay 5 \
+            'https://onecredit.rutam.dpdns.org/companies/SYN-001550/similar?limit=4' \
+            --output "$RUNNER_TEMP/onecredit-cards.json"
+          jq --exit-status '
+            type == "array" and length == 4
+            and all(.[]; (.name | strings | length) > 0
+              and (.registration_number | strings | test("^SYN-[0-9]+$"))
+              and .registration_number != "SYN-001550")
+            and ([.[].registration_number] | unique | length) == 4
+          ' "$RUNNER_TEMP/onecredit-cards.json"
