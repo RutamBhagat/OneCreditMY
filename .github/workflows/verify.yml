@@ -108,11 +108,23 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Publish the verified ARM64 image
+      - name: Publish image from verified commit
+        shell: bash
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
-          if result=$(docker buildx imagetools inspect "$image" 2>&1); then
-            printf 'SHA tag already exists. Leaving it unchanged.\n%s\n' "$result"
+          source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          if result=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image" 2>&1); then
+            if ! docker buildx imagetools inspect --format '{{json .Image}}' "${image%:*}@$result" |
+              jq -e --arg source "$source" --arg revision "$GITHUB_SHA" '
+                (.["linux/arm64"] // .)
+                | .os == "linux" and .architecture == "arm64"
+                  and .config.Labels["org.opencontainers.image.source"] == $source
+                  and .config.Labels["org.opencontainers.image.revision"] == $revision
+              ' >/dev/null; then
+              printf 'Cannot verify Linux ARM64 and OCI source/revision for %s at %s.\n' "$image" "$result" >&2
+              exit 1
+            fi
+            printf 'SHA tag already points to validated image %s.\n' "$result"
             exit 0
           fi
           case "$result" in
@@ -121,7 +133,7 @@ jobs:
           esac
 
           docker build --platform linux/arm64 --tag "$image" \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.source=$source" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" .
           docker push "$image"
 
