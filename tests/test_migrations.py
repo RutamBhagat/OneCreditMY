@@ -7,13 +7,13 @@ from contextlib import ExitStack
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.pool import NullPool
 
 from companies.db import database_url
 
 
-def test_initial_migration_upgrade_downgrade_and_reupgrade(monkeypatch):
+def test_migration_upgrade_downgrade_and_reupgrade(monkeypatch):
     test_database_url = os.environ.get("TEST_DATABASE_URL")
     if not test_database_url:
         pytest.skip("Set TEST_DATABASE_URL for an isolated Compose Postgres server")
@@ -33,12 +33,24 @@ def test_initial_migration_upgrade_downgrade_and_reupgrade(monkeypatch):
         stack.callback(connection.exec_driver_sql, f"DROP DATABASE {db_name}")
         temporary_db = create_engine(temporary_url, poolclass=NullPool)
 
+        alembic("upgrade", "0001_companies")
+        with temporary_db.begin() as db:
+            db.execute(
+                text("INSERT INTO companies (registration_number, updated_at, active) VALUES ('LEGACY', now(), false)")
+            )
+
         alembic("upgrade", "head")
-        assert inspect(temporary_db).has_table("companies")
+        assert inspect(temporary_db).has_table("event_receipts")
         alembic("check")
+
+        alembic("downgrade", "-1")
+        assert not inspect(temporary_db).has_table("event_receipts")
+        with temporary_db.connect() as db:
+            assert db.scalar(text("SELECT registration_number FROM companies")) == "LEGACY"
 
         alembic("downgrade", "-1")
         assert not inspect(temporary_db).has_table("companies")
 
         alembic("upgrade", "head")
         assert inspect(temporary_db).has_table("companies")
+        assert inspect(temporary_db).has_table("event_receipts")

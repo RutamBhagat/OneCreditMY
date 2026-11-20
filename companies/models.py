@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from pgvector.sqlalchemy import VECTOR
-from sqlalchemy import DateTime, Index, Text, true
+from sqlalchemy import DateTime, Index, LargeBinary, Text, true
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -20,6 +20,14 @@ class Company(Base):
     state: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(VECTOR(384))
+
+
+class EventReceipt(Base):
+    __tablename__ = "event_receipts"
+
+    message_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    raw_body: Mapped[bytes | None] = mapped_column(LargeBinary)
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
 
 
 Index(

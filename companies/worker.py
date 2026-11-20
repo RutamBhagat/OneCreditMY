@@ -6,12 +6,13 @@ import os
 from datetime import UTC, datetime, timedelta, timezone
 
 import aio_pika
+from aio_pika.abc import AbstractIncomingMessage
 from fastembed import TextEmbedding
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from companies.db import database_url
-from companies.models import Company
+from companies.models import Company, EventReceipt
 from producer.publish import QUEUE
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -48,6 +49,46 @@ def company_upsert(values: dict):
     )
 
 
+async def store_message(session: AsyncSession, message: AbstractIncomingMessage, model: TextEmbedding) -> None:
+    if message.message_id is None:
+        raise ValueError("Missing AMQP message_id")
+    receipt = (
+        insert(EventReceipt)
+        .values(message_id=message.message_id)
+        .on_conflict_do_nothing(index_elements=[EventReceipt.message_id])
+        .returning(EventReceipt.message_id)
+    )
+    if (await session.execute(receipt)).scalar_one_or_none() is None:
+        return
+
+    event = json.loads(message.body)
+    values = {
+        "registration_number": event["registrationNumber"].strip().upper(),
+        "updated_at": parse_registry_timestamp(event["updatedAt"]),
+        "active": False,
+        "name": None,
+        "industry": None,
+        "state": None,
+        "description": None,
+        "embedding": None,
+    }
+    if event["type"] == "company-upserted":
+        data = event["data"]
+        description = data["natureOfBusiness"]
+        embedding = await asyncio.to_thread(next, iter(model.embed([description])))
+        values.update(
+            active=True,
+            name=data["companyName"],
+            industry=data.get("industry"),
+            state=data.get("state"),
+            description=description,
+            embedding=embedding.tolist(),
+        )
+    elif event["type"] != "company-struck-off":
+        raise ValueError(f"Unsupported event type: {event['type']}")
+    await session.execute(company_upsert(values))
+
+
 async def consume() -> None:
     model = await asyncio.to_thread(TextEmbedding, MODEL_NAME)
     port = os.environ.get("RABBITMQ_PORT", "5672")
@@ -63,34 +104,8 @@ async def consume() -> None:
 
             async with queue.iterator() as messages:
                 async for message in messages:
-                    event = json.loads(message.body)
-                    values = {
-                        "registration_number": event["registrationNumber"].strip().upper(),
-                        "updated_at": parse_registry_timestamp(event["updatedAt"]),
-                        "active": False,
-                        "name": None,
-                        "industry": None,
-                        "state": None,
-                        "description": None,
-                        "embedding": None,
-                    }
-                    if event["type"] == "company-upserted":
-                        data = event["data"]
-                        description = data["natureOfBusiness"]
-                        embedding = await asyncio.to_thread(next, iter(model.embed([description])))
-                        values.update(
-                            active=True,
-                            name=data["companyName"],
-                            industry=data.get("industry"),
-                            state=data.get("state"),
-                            description=description,
-                            embedding=embedding.tolist(),
-                        )
-                    elif event["type"] != "company-struck-off":
-                        raise ValueError(f"Unsupported event type: {event['type']}")
-
                     async with sessions.begin() as session:
-                        await session.execute(company_upsert(values))
+                        await store_message(session, message, model)
                     await message.ack()
     finally:
         await engine.dispose()
