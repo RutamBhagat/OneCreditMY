@@ -113,22 +113,23 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
           source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          if result=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image" 2>&1); then
-            if ! docker buildx imagetools inspect --format '{{json .Image}}' "${image%:*}@$result" |
-              jq -e --arg source "$source" --arg revision "$GITHUB_SHA" '
-                (.["linux/arm64"] // .)
-                | .os == "linux" and .architecture == "arm64"
-                  and .config.Labels["org.opencontainers.image.source"] == $source
-                  and .config.Labels["org.opencontainers.image.revision"] == $revision
-              ' >/dev/null; then
-              printf 'Cannot verify Linux ARM64 and OCI source/revision for %s at %s.\n' "$image" "$result" >&2
+          if result=$(docker buildx imagetools inspect --format '{{json .}}' "$image" 2>&1); then
+            if ! digest=$(jq -er --arg source "$source" --arg revision "$GITHUB_SHA" '
+              (.image | .["linux/arm64"] // .) as $config
+              | select($config.os == "linux" and $config.architecture == "arm64"
+                and $config.config.Labels["org.opencontainers.image.source"] == $source
+                and $config.config.Labels["org.opencontainers.image.revision"] == $revision)
+              | .manifest.digest | strings | select(test("^sha256:[0-9a-f]{64}$"))
+            ' <<< "$result"); then
+              printf 'Cannot verify the digest, Linux ARM64, and OCI source/revision for %s.\n' "$image" >&2
               exit 1
             fi
-            printf 'SHA tag already points to validated image %s.\n' "$result"
+            printf 'SHA tag already points to validated image %s.\n' "$digest"
             exit 0
           fi
+          # A missing config blob can also produce a "not found" error.
           case "$result" in
-            *": not found") ;;
+            "ERROR: $image: not found") ;;
             *) printf '%s\n' "$result" >&2; exit 1 ;;
           esac
 
