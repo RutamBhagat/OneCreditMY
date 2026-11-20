@@ -201,7 +201,28 @@ uv run --locked python -m pytest -q
 docker compose -p onecredit-tests down -v
 ```
 
+### Browser demo
+
+After the fixture drains, open [the local company page](http://127.0.0.1:8000/demo/SYN-001550).
+The optional demo uses the same recommendations as the JSON API. Each card opens the next company.
+To smoke-test navigation, direct loads, Back and the missing-company page with and without JavaScript:
+
+```bash
+uv run --with playwright==1.65.2 python -m playwright install chromium --only-shell
+uv run --with playwright==1.65.2 python tests/demo_browser.py http://127.0.0.1:8000
+```
+
+After changing template classes, rebuild the checked-in stylesheet with the
+[Tailwind 4.3.5 standalone CLI](https://github.com/tailwindlabs/tailwindcss/releases/tag/v4.3.5).
+
+```bash
+tailwindcss -i companies/templates/demo.css -o companies/static/demo.css --minify
+```
+
 ## Hosted API demo
+
+Open the [optional browser demo](https://onecredit.rutam.dpdns.org/demo/SYN-001550)
+on the same host as the API.
 
 Request four recommendations for the synthetic café company `SYN-001550`.
 
@@ -221,8 +242,10 @@ uc --connect a1 exec -T onecredit-worker python -m producer.publish
 
 The deployment hook applies database migrations. The publisher sends the fixture to the
 private broker, and the worker can safely process repeated deliveries.
+For a presentation-only release, dispatch the verification workflow with `api_only=true`.
+It publishes the verified image and updates only `onecredit-api`.
 
-The [verified production deployment](https://github.com/RutamBhagat/OneCreditMY/actions/runs/44717650264/attempts/2)
+The [initial full-stack deployment](https://github.com/RutamBhagat/OneCreditMY/actions/runs/44717650264/attempts/2)
 published and rolled out ARM64 image `e24ace6001a8d5125acc03a1761a39fc26b52c30`
 and passed the public HTTPS recommendation check.
 

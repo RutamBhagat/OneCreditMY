@@ -140,16 +140,22 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
             paths = client.get("/openapi.json").json()["paths"]
             assert "/companies/{registration_number}/similar" in paths
             assert "/scalar" not in paths
+            assert client.get("/docs").status_code == 200
+            assert client.get("/").headers["location"] == "/demo/SYN-001550"
+            missing = client.get(f"/demo/{source}")
+            assert missing.status_code == 404
+            assert missing.headers["content-type"].startswith("text/html")
 
             assert client.get(endpoint).status_code == 404
             for limit in (0, 51, "invalid"):
                 assert client.get(endpoint, params={"limit": limit}).status_code == 422
 
-            publish(event(source, "Valley Café", source_text))
+            publish(event(source, "Valley Café", source_text, "Food & Beverage", "Selangor"))
             wait_for(lambda: committed(1), worker, worker_log, timeout=180)
             response = client.get(endpoint)
             assert response.status_code == 200
             assert response.json() == []
+            assert "No similar companies yet" in client.get(f"/demo/{source}").text
 
             company_snapshot = select(func.row_to_json(Company.__table__.table_valued())).where(
                 Company.registration_number == source
@@ -184,6 +190,23 @@ def test_ranked_cards_from_queue(tmp_path, monkeypatch):
                 omitted,
             )
             wait_for(lambda: committed(6), worker, worker_log, timeout=15)
+
+            page = client.get(f"/demo/{source.lower()}")
+            assert page.status_code == 200
+            assert page.headers["content-type"].startswith("text/html")
+            assert all(value in page.text for value in ("Valley Café", "Food &amp; Beverage", "Selangor", source_text))
+            assert 'hx-boost="true"' in page.text
+            links = re.findall(r'href="(/demo/[^"]+)"', page.text.split('id="similar-companies"', 1)[1])
+            assert len(links) == 4
+            assert links == [f"/demo/{card['registration_number']}" for card in client.get(endpoint).json()]
+            neighbor = client.get(f"/demo/{cafe}", headers={"HX-Boosted": "true"})
+            assert neighbor.status_code == 200
+            assert "<title>Kedai Kopi" in neighbor.text
+            assert cafe_text in neighbor.text
+            assert f'href="/demo/{cafe}"' not in neighbor.text
+            css = client.get("/static/demo.css")
+            assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
+            assert ".grid" in css.text
 
             def company(number):
                 return db.execute(

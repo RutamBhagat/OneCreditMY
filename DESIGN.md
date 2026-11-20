@@ -28,6 +28,8 @@ On a fresh Compose stack, the 2,518 deliveries produced 2,450 receipts, includin
 
 Uncloud runs the API, worker, pgvector and RabbitMQ on one ARM64 VM. Caddy serves the API over HTTPS. PostgreSQL and RabbitMQ use separate persistent volumes and have no published ports. A VM outage takes the demo offline, and losing its disk would require restoring the data or replaying the synthetic fixture. [Deployment instructions](README.md#hosted-api-demo)
 
+The optional browser demo projects the source company's details in the same recommendation query and renders a Jinja2 page. Links work as ordinary page loads and htmx boosts them when JavaScript is available. FastAPI serves the compiled Tailwind stylesheet and the pinned htmx script alongside the page.
+
 ## At 10× volume
 
 At roughly 20,000 companies, monitor queue age and API latency separately. If inference limits ingestion, batch embeddings. For each delivery, commit the transaction before sending the acknowledgement. If connection setup dominates HTTP latency, use a bounded API connection pool. Tune HNSW only if query latency warrants it.

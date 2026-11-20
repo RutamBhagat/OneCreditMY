@@ -36,6 +36,11 @@ on:
       - 'compose.production.yml'
       - '.github/workflows/verify.yml'
   workflow_dispatch:
+    inputs:
+      api_only:
+        description: Deploy only the API for a presentation-only release
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -190,10 +195,16 @@ jobs:
 
       - name: Deploy the verified SHA with Uncloud
         env:
+          API_ONLY: ${{ inputs.api_only }}
           IMAGE_TAG: ${{ github.sha }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
-        run: uc deploy --connect a1 --yes --no-build --file compose.production.yml
+        run: |
+          services=()
+          if [[ "$API_ONLY" == true ]]; then
+            services=(onecredit-api)
+          fi
+          uc deploy --connect a1 --yes --no-build --file compose.production.yml "${services[@]}"
 
       - name: Check recommendations over public HTTPS
         run: |
@@ -207,3 +218,7 @@ jobs:
               and .registration_number != "SYN-001550")
             and ([.[].registration_number] | unique | length) == 4
           ' "$RUNNER_TEMP/onecredit-cards.json"
+          curl --fail --silent --show-error --max-time 10 --retry 6 --retry-all-errors --retry-delay 5 \
+            'https://onecredit.rutam.dpdns.org/demo/SYN-001550' \
+            --output "$RUNNER_TEMP/onecredit-demo.html"
+          grep -Fq 'id="similar-companies"' "$RUNNER_TEMP/onecredit-demo.html"

@@ -1,0 +1,12 @@
+@import "tailwindcss" source(none);
+@source "./company.html";
+
+@theme {
+  --color-surface: #f5f9fc;
+  --color-panel: #e7f1f5;
+  --color-line: #c5d7e0;
+  --color-ink: #172d40;
+  --color-muted: #4a6475;
+  --color-accent: #12645e;
+  --font-display: Georgia, "Times New Roman", serif;
+}
